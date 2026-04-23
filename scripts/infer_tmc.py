@@ -29,7 +29,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate TMC-Net.")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--num-bits", type=int, default=100000)
+    parser.add_argument("--num-bits", type=int, default=50000)
     parser.add_argument("--batch-size", type=int, default=4000)
     parser.add_argument("--snr-start", type=int, default=0)
     parser.add_argument("--snr-stop", type=int, default=40)

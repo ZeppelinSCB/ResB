@@ -50,7 +50,6 @@ class TMCNet(nn.Module):
         n_t: int = 4,
         n_ris: int = 64,
         s: int = 4,
-        residual_scale_init: float = 0.1,
         **kwargs,
     ):
         super().__init__()
@@ -105,6 +104,7 @@ class TMCNet(nn.Module):
             nn.Linear(token_dim, token_dim),
             nn.SiLU(),
         )
+
         self.fusion_proj = nn.Sequential(
             nn.Linear(token_dim * 6, token_dim),
             nn.LayerNorm(token_dim),
@@ -115,9 +115,6 @@ class TMCNet(nn.Module):
             nn.Linear(token_dim, token_dim),
             nn.SiLU(),
             nn.Linear(token_dim, 2),
-        )
-        self.residual_scale_raw = nn.Parameter(
-            torch.tensor(_softplus_inverse(max(residual_scale_init - 1e-2, 1e-4)), dtype=torch.float32)
         )
 
     def forward_parts(
@@ -166,8 +163,7 @@ class TMCNet(nn.Module):
             )
         )
         delta = self.mismatch_head(candidate_context)
-        residual_scale = F.softplus(self.residual_scale_raw) + 1e-2
-        delta_mu = torch.complex(delta[..., 0].float(), delta[..., 1].float()) * residual_scale
+        delta_mu = torch.complex(delta[..., 0].float(), delta[..., 1].float())
         mu_base = mu_ideal if mu_base is None else mu_base
         mu_corrected = mu_base.to(torch.complex64) + delta_mu
         return {
@@ -178,7 +174,6 @@ class TMCNet(nn.Module):
             "ris_tokens": ris_tokens,
             "ris_repr": ris_repr,
             "snr_condition": snr_condition,
-            "residual_scale": residual_scale,
         }
 
     def forward(

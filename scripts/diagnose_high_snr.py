@@ -66,7 +66,6 @@ def diagnose_model(model, config, device, snr_points=[10, 15, 20, 25, 30, 35, 40
         'delta_abs': [],
         'ideal_top2_gap': [],
         'corrected_top2_gap': [],
-        'residual_scale': [],
         'ranking_loss_active_ratio': [],  # % of samples with non-zero ranking loss
     }
 
@@ -81,7 +80,7 @@ def diagnose_model(model, config, device, snr_points=[10, 15, 20, 25, 30, 35, 40
             'coord_loss': 0.0, 'baseline_center_mse': 0.0, 'corrected_center_mse': 0.0,
             'practical_correct': 0, 'corrected_correct': 0, 'oracle_correct': 0,
             'delta_abs': 0.0, 'ideal_gap': 0.0, 'corrected_gap': 0.0,
-            'residual_scale': 0.0, 'ranking_active': 0, 'count': 0,
+            'ranking_active': 0, 'count': 0,
         }
 
         n_batches = max(1, n_samples // batch_size)
@@ -139,7 +138,6 @@ def diagnose_model(model, config, device, snr_points=[10, 15, 20, 25, 30, 35, 40
                 totals['delta_abs'] += outputs["delta_mu"].abs().mean().item() * batch_size
                 totals['ideal_gap'] += 0.0  # Skip for efficiency
                 totals['corrected_gap'] += corrected_gap * batch_size
-                totals['residual_scale'] += outputs["residual_scale"].mean().item() * batch_size
                 totals['ranking_active'] += ranking_active
                 totals['count'] += batch_size
 
@@ -157,7 +155,6 @@ def diagnose_model(model, config, device, snr_points=[10, 15, 20, 25, 30, 35, 40
         results['oracle_acc'].append(totals['oracle_correct'] / n)
         results['delta_abs'].append(totals['delta_abs'] / n)
         results['corrected_top2_gap'].append(totals['corrected_gap'] / n)
-        results['residual_scale'].append(totals['residual_scale'] / n)
         results['ranking_loss_active_ratio'].append(totals['ranking_active'] / n)
 
         print(f"  Accuracy: Practical={results['practical_acc'][-1]:.4f}, "
@@ -167,7 +164,7 @@ def diagnose_model(model, config, device, snr_points=[10, 15, 20, 25, 30, 35, 40
         print(f"  Ranking active: {results['ranking_loss_active_ratio'][-1]*100:.1f}%")
         print(f"  Center MSE: Baseline={results['baseline_center_mse'][-1]:.6f}, "
               f"Corrected={results['corrected_center_mse'][-1]:.6f}")
-        print(f"  Delta magnitude: {results['delta_abs'][-1]:.4f}, Residual scale: {results['residual_scale'][-1]:.4f}")
+        print(f"  Delta magnitude: {results['delta_abs'][-1]:.4f}")
 
     return results
 
@@ -211,11 +208,10 @@ def print_diagnostic_summary(results):
                   f"Corrected MSE={results['corrected_center_mse'][i]:.6f}, "
                   f"Improvement={improvement:.2f}dB")
 
-    # Check 5: Delta magnitude vs residual scale
-    print("\n[Issue 5] Delta magnitude and residual scale:")
+    # Check 5: Delta magnitude
+    print("\n[Issue 5] Delta magnitude:")
     for i, snr in enumerate(results['snr']):
-        print(f"  SNR={snr}dB: Delta_mag={results['delta_abs'][i]:.4f}, "
-              f"Residual_scale={results['residual_scale'][i]:.4f}")
+        print(f"  SNR={snr}dB: Delta_mag={results['delta_abs'][i]:.4f}")
 
 
 def main():
