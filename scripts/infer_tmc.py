@@ -122,41 +122,29 @@ def evaluate(model, config, args, snr_range):
     num_symbols = args.num_bits // config.bits_per_symbol
     results = {
         "tmc_corrected": {"ber": [], "symbol_acc": []},
-        "ideal_ml": {"ber": [], "symbol_acc": []},
         "practical_baseline": {"ber": [], "symbol_acc": []},
         "true_center_oracle": {"ber": [], "symbol_acc": []},
         "calibration": {
-            "center_mse_ideal": [],
             "center_mse_practical": [],
             "center_mse_corrected": [],
-            "center_gain_db": [],
             "center_gain_vs_practical_db": [],
             "delta_abs": [],
-            "ideal_gap_mean": [],
             "corrected_gap_mean": [],
-        },
-        "diagnostics": {
-            "corrected_changed_vs_ideal": [],
-            "ideal_wrong_to_corrected_right": [],
-            "ideal_right_to_corrected_wrong": [],
         },
         "timing": {
             "tmc_seconds_per_symbol": [],
-            "ideal_ml_seconds_per_symbol": [],
         },
     }
 
     for snr_db in snr_range:
-        err = {key: 0 for key in ("tmc_corrected", "ideal_ml", "practical_baseline", "true_center_oracle")}
-        bits = {key: 0 for key in ("tmc_corrected", "ideal_ml", "practical_baseline", "true_center_oracle")}
-        correct = {key: 0 for key in ("tmc_corrected", "ideal_ml", "practical_baseline", "true_center_oracle")}
-        changed = fixed = broken = 0
+        err = {key: 0 for key in ("tmc_corrected", "practical_baseline", "true_center_oracle")}
+        bits = {key: 0 for key in ("tmc_corrected", "practical_baseline", "true_center_oracle")}
+        correct = {key: 0 for key in ("tmc_corrected", "practical_baseline", "true_center_oracle")}
         total = 0
         tmc_seconds = 0.0
-        ideal_seconds = 0.0
-        center_mse_ideal = center_mse_practical = center_mse_corrected = 0.0
+        center_mse_practical = center_mse_corrected = 0.0
         delta_abs = 0.0
-        ideal_gap = corrected_gap = 0.0
+        corrected_gap = 0.0
         remaining = num_symbols
 
         while remaining > 0:
@@ -178,18 +166,10 @@ def evaluate(model, config, args, snr_range):
             _sync_device(device)
             tmc_seconds += time.perf_counter() - start
 
-            _sync_device(device)
-            start = time.perf_counter()
-            ideal_dist = candidate_distances_from_centers(batch["y"], batch["mu_ideal"])
-            ideal_pred = ideal_dist.argmin(dim=1)
-            _sync_device(device)
-            ideal_seconds += time.perf_counter() - start
-
             practical_baseline_pred = candidate_distances_from_centers(batch["y"], batch["mu_practical"]).argmin(dim=1)
             true_center_oracle_pred = candidate_distances_from_centers(batch["y"], batch["mu_true"]).argmin(dim=1)
             preds = {
                 "tmc_corrected": corrected_pred,
-                "ideal_ml": ideal_pred,
                 "practical_baseline": practical_baseline_pred,
                 "true_center_oracle": true_center_oracle_pred,
             }
@@ -199,17 +179,9 @@ def evaluate(model, config, args, snr_range):
                 bits[key] += b
                 correct[key] += int((pred == batch["labels"]).sum().item())
 
-            ideal_ok = ideal_pred == batch["labels"]
-            corrected_ok = corrected_pred == batch["labels"]
-            changed += int((corrected_pred != ideal_pred).sum().item())
-            fixed += int(((~ideal_ok) & corrected_ok).sum().item())
-            broken += int((ideal_ok & (~corrected_ok)).sum().item())
-
-            center_mse_ideal += float(_complex_mse(batch["mu_ideal"], batch["mu_true"]).item()) * n
             center_mse_practical += float(_complex_mse(batch["mu_practical"], batch["mu_true"]).item()) * n
             center_mse_corrected += float(_complex_mse(outputs["mu_corrected"], batch["mu_true"]).item()) * n
             delta_abs += float(outputs["delta_mu"].abs().mean().item()) * n
-            ideal_gap += _mean_top2_gap(ideal_dist) * n
             corrected_gap += _mean_top2_gap(corrected_dist) * n
 
             total += n
@@ -219,26 +191,16 @@ def evaluate(model, config, args, snr_range):
             results[key]["ber"].append(err[key] / bits[key])
             results[key]["symbol_acc"].append(correct[key] / total)
 
-        mean_center_mse_ideal = center_mse_ideal / total
         mean_center_mse_practical = center_mse_practical / total
         mean_center_mse_corrected = center_mse_corrected / total
-        results["calibration"]["center_mse_ideal"].append(mean_center_mse_ideal)
         results["calibration"]["center_mse_practical"].append(mean_center_mse_practical)
         results["calibration"]["center_mse_corrected"].append(mean_center_mse_corrected)
-        results["calibration"]["center_gain_db"].append(
-            10.0 * math.log10(max(mean_center_mse_ideal, 1e-12) / max(mean_center_mse_corrected, 1e-12))
-        )
         results["calibration"]["center_gain_vs_practical_db"].append(
             10.0 * math.log10(max(mean_center_mse_practical, 1e-12) / max(mean_center_mse_corrected, 1e-12))
         )
         results["calibration"]["delta_abs"].append(delta_abs / total)
-        results["calibration"]["ideal_gap_mean"].append(ideal_gap / total)
         results["calibration"]["corrected_gap_mean"].append(corrected_gap / total)
-        results["diagnostics"]["corrected_changed_vs_ideal"].append(changed / total)
-        results["diagnostics"]["ideal_wrong_to_corrected_right"].append(fixed / total)
-        results["diagnostics"]["ideal_right_to_corrected_wrong"].append(broken / total)
         results["timing"]["tmc_seconds_per_symbol"].append(tmc_seconds / total)
-        results["timing"]["ideal_ml_seconds_per_symbol"].append(ideal_seconds / total)
 
     results["practical_oracle"] = {
         "ber": list(results["practical_baseline"]["ber"]),
@@ -271,18 +233,16 @@ def main():
     elapsed = time.perf_counter() - t0
     print(f"  Done in {elapsed:.1f}s")
     print(f"  TMC corrected avg BER={np.mean(results['tmc_corrected']['ber']):.5f}")
-    print(f"  Ideal ML avg BER={np.mean(results['ideal_ml']['ber']):.5f}")
     print(f"  Practical baseline avg BER={np.mean(results['practical_baseline']['ber']):.5f}")
     print(f"  Locked true-center oracle avg BER={np.mean(results['true_center_oracle']['ber']):.5f}")
-    print(f"  Center gain vs ideal avg={np.mean(results['calibration']['center_gain_db']):.2f} dB")
     print(f"  Center gain vs practical avg={np.mean(results['calibration']['center_gain_vs_practical_db']):.2f} dB")
     print(f"  Delta magnitude avg={np.mean(results['calibration']['delta_abs']):.4f}")
 
-    print(f"\n{'SNR':>4}  {'TMC':>10}  {'Ideal ML':>10}  {'Baseline':>10}  {'TrueCtr':>10}")
+    print(f"\n{'SNR':>4}  {'TMC':>10}  {'Baseline':>10}  {'TrueCtr':>10}")
     for idx, snr_db in enumerate(snr_range):
         print(
             f"{snr_db:4d}  {results['tmc_corrected']['ber'][idx]:10.5f}  "
-            f"{results['ideal_ml']['ber'][idx]:10.5f}  {results['practical_baseline']['ber'][idx]:10.5f}  "
+            f"{results['practical_baseline']['ber'][idx]:10.5f}  "
             f"{results['true_center_oracle']['ber'][idx]:10.5f}"
         )
 
@@ -326,7 +286,6 @@ def main():
 
         plt.figure(figsize=(10, 6))
         plt.semilogy(snr_range, np.maximum(results["tmc_corrected"]["ber"], 1e-7), "ro-", label="TMC corrected")
-        plt.semilogy(snr_range, np.maximum(results["ideal_ml"]["ber"], 1e-7), "gs-", label="Ideal ML")
         plt.semilogy(
             snr_range,
             np.maximum(results["practical_baseline"]["ber"], 1e-7),
@@ -341,7 +300,7 @@ def main():
         )
         plt.xlabel("SNR (dB)")
         plt.ylabel("BER")
-        plt.title(f"{model_class} vs ideal-template ML")
+        plt.title(f"{model_class} evaluation")
         plt.grid(True, which="both", linestyle="--", alpha=0.6)
         plt.legend()
         plt.tight_layout()
