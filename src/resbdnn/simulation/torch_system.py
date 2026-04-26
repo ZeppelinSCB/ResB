@@ -10,7 +10,11 @@ from resbdnn.simulation.candidates import candidate_group_arrays
 
 def _candidate_groups(config: SystemConfig, device: torch.device):
     groups = []
-    for na, candidate_indices, combos in candidate_group_arrays(config.n_t, config.s):
+    for na, candidate_indices, combos in candidate_group_arrays(
+        config.n_t,
+        config.s,
+        config.candidate_strategy,
+    ):
         groups.append(
             (
                 na,
@@ -97,6 +101,45 @@ def _apply_csi_error(
     raise ValueError(f"Unknown CSI error target: {csi_error_target}")
 
 
+def _posterior_mean_var(
+    observed: torch.Tensor,
+    error_var: torch.Tensor,
+    csi_error_model: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    view_shape = (observed.shape[0],) + (1,) * (observed.ndim - 1)
+    error_var = error_var.reshape(view_shape).to(observed.real.dtype)
+    if csi_error_model == "additive":
+        posterior_mean = observed / (1.0 + error_var)
+        posterior_var = error_var / (1.0 + error_var)
+    elif csi_error_model == "normalized":
+        alpha = 1.0 - error_var / 2.0
+        beta_sq = error_var * (1.0 - error_var / 4.0)
+        posterior_mean = alpha * observed
+        posterior_var = beta_sq
+    else:
+        raise ValueError(f"Unknown CSI error model: {csi_error_model}")
+    return posterior_mean.to(torch.complex64), posterior_var.clamp_min(0.0).to(torch.float32)
+
+
+def posterior_shrinkage_channels(
+    h_hat: torch.Tensor,
+    g_hat: torch.Tensor,
+    config: SystemConfig,
+    csi_error_var: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    h_mean, h_var = _posterior_mean_var(h_hat, csi_error_var, config.csi_error_model)
+    g_mean, g_var = _posterior_mean_var(g_hat, csi_error_var, config.csi_error_model)
+    del h_var, g_var
+
+    if config.csi_error_target == "h_only":
+        g_mean = g_hat
+    elif config.csi_error_target == "g_only":
+        h_mean = h_hat
+    elif config.csi_error_target != "dual_link":
+        raise ValueError(f"Unknown CSI error target: {config.csi_error_target}")
+    return h_mean.to(torch.complex64), g_mean.to(torch.complex64)
+
+
 def quantize_ris_phase(phi: torch.Tensor, phase_bits: int) -> torch.Tensor:
     step = (2.0 * math.pi) / float(2**phase_bits)
     phi_mod = torch.remainder(phi, 2.0 * math.pi)
@@ -135,35 +178,32 @@ def candidate_phase_table_torch(
     *,
     quantized: bool,
 ) -> torch.Tensor:
-    """Calculate RIS phase table for amplitude coupling.
+    """Calculate per-active-antenna RIS phase table.
 
-    For each antenna m and RIS element i, the ideal phase is:
-    phi_m,i = angle(H_m,i) + angle(G_i)
+    Each candidate can activate multiple antennas. This table keeps the
+    quantized phase for each active antenna separately instead of folding all
+    active antenna phases into one candidate-level phase.
 
-    This function returns the phase per candidate and RIS element,
-    which is the sum of phases from all antennas in the candidate.
-    Used for amplitude coupling calculation.
-
-    Returns: phase_table of shape (batch, num_candidates, n_ris)
+    Returns: phase_table of shape (batch, num_candidates, max_active, n_ris)
     """
+    max_active = config.n_t // 2
     phase_table = torch.empty(
         h_batch.size(0),
         config.num_candidates,
+        max_active,
         config.n_ris,
         device=h_batch.device,
         dtype=torch.float32,
     )
+    phase_table.zero_()
     for active_count, candidate_indices, combo_tensor in _candidate_groups(config, h_batch.device):
         for i, combo in enumerate(combo_tensor.unbind(0)):
             cand_idx = candidate_indices[i].item()
-            # Sum ideal phases from all antennas
-            phase_sum = torch.zeros(h_batch.size(0), config.n_ris, device=h_batch.device)
-            for m in combo.tolist():
+            for active_pos, m in enumerate(combo.tolist()):
                 phase_m = torch.angle(h_batch[:, m, :]) + torch.angle(g_batch)
-                phase_sum = phase_sum + phase_m
-            if quantized and config.enable_phase_quantization:
-                phase_sum = quantize_ris_phase(phase_sum, config.ris_phase_bits)
-            phase_table[:, cand_idx, :] = phase_sum
+                if quantized and config.enable_phase_quantization:
+                    phase_m = quantize_ris_phase(phase_m, config.ris_phase_bits)
+                phase_table[:, cand_idx, active_pos, :] = phase_m
     return phase_table
 
 
@@ -301,7 +341,7 @@ def candidate_expected_signals_torch_nonideal(
         candidate_signals = torch.zeros(batch_size, num_candidates_in_group, device=h_true.device, dtype=torch.complex64)
         for i, combo in enumerate(combo_tensor.unbind(0)):
             antenna_sum = torch.zeros(batch_size, device=h_true.device, dtype=torch.complex64)
-            for m in combo.tolist():
+            for active_pos, m in enumerate(combo.tolist()):
                 h_m = h_true[:, m, :]  # (batch, n_ris)
                 g_eff_m = g_eff  # (batch, n_ris)
 
@@ -311,8 +351,12 @@ def candidate_expected_signals_torch_nonideal(
                 if amplitudes is not None:
                     # Get quantized phase and amplitude for this candidate/antenna
                     cand_idx = candidate_indices[i].item()
-                    phi_q = phase_table[:, cand_idx, :]  # quantized phase
-                    amp = amplitudes[:, cand_idx, :]
+                    if phase_table.ndim == 3:
+                        phi_q = phase_table[:, cand_idx, :]
+                        amp = amplitudes[:, cand_idx, :]
+                    else:
+                        phi_q = phase_table[:, cand_idx, active_pos, :]
+                        amp = amplitudes[:, cand_idx, active_pos, :]
 
                     # Steering: exp(j * (phi_q - ideal_phase))
                     steering = torch.polar(torch.ones_like(phi_q), phi_q - ideal_phase)
@@ -411,6 +455,20 @@ def random_tmc_batch(
         phase_g=g_hat,  # Use estimated channel phase for RIS config
         phase_table=phi_config,  # Use the same phase table as practical
     )
+    h_shrinkage, g_shrinkage = posterior_shrinkage_channels(
+        h_hat,
+        g_hat,
+        config,
+        resolved_csi_error_var,
+    )
+    mu_shrinkage_posterior = candidate_expected_signals_torch_true(
+        h_shrinkage,
+        g_shrinkage,
+        config,
+        phase_h=h_hat,
+        phase_g=g_hat,
+        phase_table=phi_config,
+    )
     signal_power_ref = mu_true.abs().square().mean(dim=1).clamp_min(1e-12)
     sigma_n = observation_noise_std_from_snr_db(snr, signal_power=signal_power_ref).to(device)
     y_clean = mu_true.gather(1, labels[:, None]).squeeze(1)
@@ -434,8 +492,9 @@ def random_tmc_batch(
         "mu_practical_oracle": mu_practical,
         "mu_ideal": mu_ideal,
         "mu_true": mu_true,
+        "mu_shrinkage_posterior": mu_shrinkage_posterior,
         "signal_power_ref": signal_power_ref.unsqueeze(-1),
-        "delta_target": (mu_true - mu_practical).to(torch.complex64),
+        "delta_target": (mu_shrinkage_posterior - mu_practical).to(torch.complex64),
     }
 
 

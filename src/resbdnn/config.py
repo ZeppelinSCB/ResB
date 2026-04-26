@@ -13,6 +13,7 @@ PAPER_SYSTEM_PRESETS = {
 
 CSI_ERROR_MODELS = ("normalized", "additive")
 CSI_ERROR_TARGETS = ("dual_link", "h_only", "g_only")
+CANDIDATE_STRATEGIES = ("prefix", "low_overlap")
 
 
 @dataclass
@@ -35,6 +36,7 @@ class SystemConfig:
     enable_phase_quantization: bool = True
     enable_amplitude_coupling: bool = True
     enable_mutual_coupling: bool = True
+    candidate_strategy: str = "prefix"
     snr_range: np.ndarray = field(default_factory=lambda: np.arange(0, 31, 2))
 
     def __post_init__(self):
@@ -71,6 +73,8 @@ class SystemConfig:
             raise ValueError("ris_amplitude_bias - ris_amplitude_scale must be >= 0")
         if not 0.0 <= self.ris_coupling_decay < 1.0:
             raise ValueError("ris_coupling_decay must be in [0, 1)")
+        if self.candidate_strategy not in CANDIDATE_STRATEGIES:
+            raise ValueError(f"Unknown candidate_strategy: {self.candidate_strategy}")
 
     @property
     def bits_for_active_count(self) -> int:
@@ -130,6 +134,7 @@ def build_system_config(
     enable_phase_quantization: bool = True,
     enable_amplitude_coupling: bool = True,
     enable_mutual_coupling: bool = True,
+    candidate_strategy: str = "prefix",
     snr_start: int = 0,
     snr_stop: int = 30,
     snr_step: int = 2,
@@ -162,6 +167,7 @@ def build_system_config(
         enable_phase_quantization=enable_phase_quantization,
         enable_amplitude_coupling=enable_amplitude_coupling,
         enable_mutual_coupling=enable_mutual_coupling,
+        candidate_strategy=candidate_strategy,
         snr_range=build_snr_range(snr_start, snr_stop, snr_step),
     )
 

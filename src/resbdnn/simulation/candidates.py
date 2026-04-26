@@ -6,10 +6,20 @@ import torch
 
 
 @lru_cache(maxsize=None)
-def candidate_combo_groups(n_t: int, s: int) -> tuple[tuple[int, tuple[tuple[int, ...], ...]], ...]:
+def candidate_combo_groups(
+    n_t: int,
+    s: int,
+    strategy: str = "prefix",
+) -> tuple[tuple[int, tuple[tuple[int, ...], ...]], ...]:
     groups = []
     for na in range(1, n_t // 2 + 1):
-        combos = tuple(list(combinations(range(n_t), na))[:s])
+        all_combos = tuple(combinations(range(n_t), na))
+        if strategy == "prefix":
+            combos = all_combos[:s]
+        elif strategy == "low_overlap":
+            combos = _select_low_overlap_combos(all_combos, s)
+        else:
+            raise ValueError(f"Unknown candidate strategy: {strategy}")
         if len(combos) < s:
             raise ValueError(
                 f"Not enough combinations for n_t={n_t}, na={na}, s={s}; got {len(combos)}"
@@ -19,28 +29,63 @@ def candidate_combo_groups(n_t: int, s: int) -> tuple[tuple[int, tuple[tuple[int
 
 
 @lru_cache(maxsize=None)
-def flat_candidate_combos(n_t: int, s: int) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
+def flat_candidate_combos(
+    n_t: int,
+    s: int,
+    strategy: str = "prefix",
+) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
     table = []
-    for na_label, (na, combos) in enumerate(candidate_combo_groups(n_t, s)):
+    for na_label, (na, combos) in enumerate(candidate_combo_groups(n_t, s, strategy)):
         for s_idx, combo in enumerate(combos):
             table.append((na_label, s_idx, combo))
     return tuple(table)
 
 
 @lru_cache(maxsize=None)
-def candidate_group_arrays(n_t: int, s: int) -> tuple[tuple[int, tuple[int, ...], np.ndarray], ...]:
+def candidate_group_arrays(
+    n_t: int,
+    s: int,
+    strategy: str = "prefix",
+) -> tuple[tuple[int, tuple[int, ...], np.ndarray], ...]:
     groups = []
     offset = 0
-    for na, combos in candidate_combo_groups(n_t, s):
+    for na, combos in candidate_combo_groups(n_t, s, strategy):
         candidate_indices = tuple(range(offset, offset + len(combos)))
         groups.append((na, candidate_indices, np.asarray(combos, dtype=np.int64)))
         offset += len(combos)
     return tuple(groups)
 
 
+def _select_low_overlap_combos(
+    all_combos: tuple[tuple[int, ...], ...],
+    s: int,
+) -> tuple[tuple[int, ...], ...]:
+    if len(all_combos) <= s:
+        return all_combos
+    selected = [all_combos[0]]
+    remaining = list(all_combos[1:])
+    while len(selected) < s:
+        selected_sets = [set(combo) for combo in selected]
+
+        def score(combo):
+            combo_set = set(combo)
+            overlaps = [len(combo_set & selected_set) for selected_set in selected_sets]
+            symdiffs = [len(combo_set ^ selected_set) for selected_set in selected_sets]
+            return (max(overlaps), sum(overlaps), -min(symdiffs), -sum(symdiffs), combo)
+
+        best = min(remaining, key=score)
+        selected.append(best)
+        remaining.remove(best)
+    return tuple(selected)
+
+
 @lru_cache(maxsize=None)
-def candidate_index_data(n_t: int, s: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    table = flat_candidate_combos(n_t, s)
+def candidate_index_data(
+    n_t: int,
+    s: int,
+    strategy: str = "prefix",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    table = flat_candidate_combos(n_t, s, strategy)
     max_na = n_t // 2
     combo_idx = np.zeros((len(table), max_na), dtype=np.int64)
     combo_mask = np.zeros((len(table), max_na), dtype=np.float32)

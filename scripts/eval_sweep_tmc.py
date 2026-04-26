@@ -93,11 +93,10 @@ def main():
         summary = {
             "csi_error_var": float(csi_error_var),
             "tmc_corrected_avg_ber": float(np.mean(results["tmc_corrected"]["ber"])),
-            "ideal_ml_avg_ber": float(np.mean(results["ideal_ml"]["ber"])),
+            "shrinkage_posterior_avg_ber": float(np.mean(results["shrinkage_posterior"]["ber"])),
             "practical_baseline_avg_ber": float(np.mean(results["practical_baseline"]["ber"])),
             "practical_oracle_avg_ber": float(np.mean(results["practical_baseline"]["ber"])),
             "true_center_oracle_avg_ber": float(np.mean(results["true_center_oracle"]["ber"])),
-            "center_gain_db": float(np.mean(results["calibration"]["center_gain_db"])),
             "center_gain_vs_practical_db": float(np.mean(results["calibration"]["center_gain_vs_practical_db"])),
             "seconds": elapsed,
             "results": results,
@@ -105,10 +104,10 @@ def main():
         sweep.append(summary)
         print(
             f"  sigma_e^2={csi_error_var:g} | tmc={summary['tmc_corrected_avg_ber']:.5f} "
-            f"ideal={summary['ideal_ml_avg_ber']:.5f} baseline={summary['practical_baseline_avg_ber']:.5f} "
+            f"posterior={summary['shrinkage_posterior_avg_ber']:.5f} "
+            f"baseline={summary['practical_baseline_avg_ber']:.5f} "
             f"true_center={summary['true_center_oracle_avg_ber']:.5f} "
-            f"gain_i={summary['center_gain_db']:.2f}dB "
-            f"gain_p={summary['center_gain_vs_practical_db']:.2f}dB ({elapsed:.1f}s)",
+            f"center_gain={summary['center_gain_vs_practical_db']:.2f}dB ({elapsed:.1f}s)",
             flush=True,
         )
 
