@@ -1,8 +1,10 @@
 """Train TMC-Net models with different Nt/s parameter combinations.
 
 Configurations:
+- Nt=4, s=2
 - Nt=4, s=4
 - Nt=8, s=4
+- Nt=8, s=8
 - Nt=16, s=8
 - Nt=16, s=16
 """
@@ -40,8 +42,10 @@ from resbdnn.utils import ensure_dir, save_json, save_torch_checkpoint, set_rand
 
 # Parameter combinations to sweep
 PARAM_CONFIGS = [
+    {"n_t": 4, "s": 2, "name": "Nt4_s2"},
     {"n_t": 4, "s": 4, "name": "Nt4_s4"},
     {"n_t": 8, "s": 4, "name": "Nt8_s4"},
+    {"n_t": 8, "s": 8, "name": "Nt8_s8"},
     {"n_t": 16, "s": 8, "name": "Nt16_s8"},
     {"n_t": 16, "s": 16, "name": "Nt16_s16"},
 ]
@@ -107,7 +111,7 @@ def parse_args():
     parser.add_argument("--csi-conditioned", action=argparse.BooleanOptionalAction, default=False,
                         help="Condition TMCNet on per-sample csi_error_var (recommended for --csi-mix).")
     parser.add_argument("--config-index", type=int, default=None,
-                        help="Run only config at this index (0-3). If None, run all.")
+                        help="Run only config at this index (0-5). If None, run all.")
     return parser.parse_args()
 
 

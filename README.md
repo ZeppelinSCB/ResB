@@ -1,45 +1,92 @@
 # TMC-Net for RIS-TFSSK
 
-Minimal PyTorch implementation of the maintained **Transformer-based Mismatch Calibration (TMC-Net)** workflow for RIS-TFSSK.
+PyTorch implementation of **Transformer-based Mismatch Calibration (TMC-Net)** for RIS-assisted communication systems with non-ideal hardware.
 
-## Current workflow
+## System Overview
 
-The maintained path now follows `design.md` directly:
+### Simulation Setup
 
-1. The simulator injects **non-ideal RIS mismatch** through discrete phase quantization, phase-dependent amplitude loss, and RIS mutual coupling.
-2. The maintained model is **TMC-Net**, an SNR-conditioned RIS-token transformer that predicts a complex CSI-residual correction `delta_mu` for every candidate template on top of the practical non-ideal baseline.
-3. Detection stays geometric: compare **TMC-corrected templates**, **ideal-template ML**, the **practical baseline** (`practical_oracle` remains as a compatibility report key), and the **configuration-locked true-center oracle**.
-4. The paper-text imperfect-CSI ML reproduction remains separate in `scripts/reproduce_paper_text.py`.
+RIS-empowered transmission with TFS (Transmit Field Switching):
+- **n_t**: Number of transmit antennas (power of 2)
+- **n_ris**: Number of RIS elements
+- **s**: Number of phase combinations per active RIS configuration
+- **Candidates**: `(n_t/2) × s` template candidates per transmission
 
-## Setup
+### Non-Ideal Hardware Model
 
-```bash
-conda activate resb
-pip install -r requirements.txt
+RIS hardware non-ideality is injected through three effects:
+
+| Effect | Parameter | Default | Description |
+|--------|-----------|---------|-------------|
+| Phase Quantization | `ris_phase_bits` | 2 bits | Discrete phase levels (4 levels) |
+| Amplitude Loss | `ris_amplitude_bias` | 0.9 | Base amplitude scaling |
+| | `ris_amplitude_scale` | 0.05 | Phase-dependent amplitude variation |
+| Mutual Coupling | `ris_coupling_decay` | 0.05 | Inter-element coupling decay |
+
+### CSI Error Model
+
+Channel state information (CSI) is corrupted by estimation errors:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `csi_error_var` | 0.5 | Variance of CSI estimation error |
+| `csi_error_model` | additive | Error injection model |
+| `csi_error_target` | dual_link | Applies to h and g jointly |
+| `csi_error_snr_coupled` | True | Error variance scales with SNR |
+
+## Model Architecture
+
+### TMCNet Backbone
+
+**Location**: [backbones.py](src/resbdnn/modeling/backbones.py)
+
+TMCNet is a transformer-based model that predicts a complex CSI-residual correction `delta_mu` for each template candidate.
+
+**Architecture Components**:
+
+```
+Input Processing
+├── Channel features (h_hat, g_hat) → token_dim projection
+├── SNR conditioning → SiLU embedding
+└── Phase configuration → projection
+
+Transformer Backbone
+└── 6 × ConditionedSelfAttentionBlock
+    ├── LayerNorm + FiLM conditioning on SNR
+    ├── Multi-head self-attention
+    └── Feed-forward network
+
+Candidate Processing
+├── Candidate query embeddings
+├── Candidate attribute projection (n_a, s_idx)
+├── Active RIS feature projection (11-dim)
+├── Mismatch feature projection (mu_ideal - mu_practical)
+└── Global representation (mean pooling)
+
+Output Head
+└── Fusion projection → residual head → delta_mu (complex)
 ```
 
-## Main scripts
+**Key Parameters**:
 
-```text
-scripts/
-  train_tmc.py          # train the maintained TMC-Net calibration model
-  infer_tmc.py          # evaluate TMC-corrected templates vs ideal ML / oracle
-  eval_sweep_tmc.py     # sweep one checkpoint across multiple CSI error levels
-  run_tmc_ablations.sh  # run the main TMC capacity ablations
-  diagnose_tmc.py       # confusion/alignment diagnostics for a trained checkpoint
-  run_tmc_diagnostics.sh # loss and hardware diagnostic experiment bundle
-  reproduce_paper_text.py
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `token_dim` | 256 | Token embedding dimension |
+| `n_layers` | 6 | Number of transformer layers |
+| `n_heads` | 8 | Attention heads |
+| `dropout` | 0.1 | Dropout rate |
 
-## Train TMC-Net
+## Training
+
+### Training Script
 
 ```bash
 python scripts/train_tmc.py \
     --paper-preset fig3-3b \
-    --csi-error-var 0.1 \
-    --samples-per-snr 20000 \
+    --csi-error-var 0.5 \
+    --samples-per-snr 10000 \
     --epochs 80 \
-    --patience 15 \
+    --patience 10 \
     --batch-size 512 \
     --learning-rate 2e-4 \
     --token-dim 256 \
@@ -47,69 +94,111 @@ python scripts/train_tmc.py \
     --n-heads 8
 ```
 
-This writes the maintained checkpoint to `outputs/checkpoints/tmc_best.pt`.
+### Loss Function
 
-The default non-ideal hardware matches the design note:
+The training uses a combination of two effective losses:
 
-- `--ris-phase-bits 2`
-- `--ris-amplitude-bias 0.8`
-- `--ris-amplitude-scale 0.2`
-- `--ris-coupling-decay 0.15`
+1. **Ranking Loss** (weight: 1.0, margin: 0.25)
+   - Ensures the correct candidate has smaller distance than incorrect candidates
 
-The training loss is:
+2. **Coordinate Loss** (weight: 1.0)
+   - MSE between corrected centers and shrinkage posterior targets
+   - Anchor target: `mu_shrinkage_posterior` (achievable from noisy CSI estimates)
 
-```text
-ranking_loss(y, mu_corrected) + distill_weight * mse(delta_mu, mu_true - mu_practical)
+```python
+loss = rank_weight * ranking_loss(corrected_dist, labels, margin=0.25) \
+     + coord_weight * MSE(mu_corrected, mu_shrinkage_posterior)
 ```
 
-## Evaluate the maintained model
+### Training Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `samples_per_snr` | 10000 | Training samples per SNR point |
+| `steps_per_epoch` | 64 | Gradient steps per epoch |
+| `val_batches` | 10 | Validation batches |
+| `warmup_epochs` | 3 | Learning rate warmup |
+| `grad_clip` | 1.0 | Gradient clipping norm |
+| `weight_decay` | 1e-4 | AdamW weight decay |
+| `amp` | auto | Automatic mixed precision (CUDA) |
+
+### Checkpoint Output
+
+Trained checkpoints are saved to:
+```
+outputs/checkpoints/tmc_simple_best.pt
+```
+
+## Inference
+
+### Evaluation Script
 
 ```bash
 python scripts/infer_tmc.py \
-    --checkpoint outputs/checkpoints/tmc_best.pt \
-    --csi-error-var 0.1 \
-    --num-bits 100000
-
-python scripts/eval_sweep_tmc.py \
-    --checkpoint outputs/checkpoints/tmc_best.pt \
-    --csi-error-vars 0.0 0.05 0.1 0.15 0.2 \
-    --num-bits 100000
-
-bash scripts/run_tmc_ablations.sh
+    --checkpoint outputs/checkpoints/tmc_simple_best.pt \
+    --num-bits 50000 \
+    --snr-start 0 \
+    --snr-stop 40 \
+    --snr-step 2
 ```
 
-Reports include:
+### Evaluation Metrics
 
-- `tmc_corrected`: BER after template calibration
-- `ideal_ml`: BER from the mismatched ideal-template detector
-- `practical_baseline`: BER from the strongest model-based detector that uses the same noisy CSI as the receiver plus the true non-ideal hardware model
-- `practical_oracle`: compatibility alias for `practical_baseline`
-- `true_center_oracle`: BER from the configuration-locked detector that knows the real non-ideal centers
-- `calibration`: center-MSE and calibration-gain diagnostics
+The inference script reports BER for multiple detection strategies:
 
-## Diagnose the oracle gap
+| Metric | Description |
+|--------|-------------|
+| `tmc_corrected` | BER after TMC-Net template calibration |
+| `practical_baseline` | BER from model-based detector with noisy CSI |
+| `shrinkage_posterior` | BER from shrinkage posterior oracle |
+| `true_center_oracle` | BER from configuration-locked true-center oracle |
+| `practical_oracle` | Compatibility alias for `practical_baseline` |
+
+### Calibration Diagnostics
+
+| Metric | Description |
+|--------|-------------|
+| `center_mse_practical` | MSE between practical and true centers |
+| `center_mse_corrected` | MSE between corrected and true centers |
+| `center_gain_vs_practical_db` | Improvement in center estimation (dB) |
+| `delta_abs` | Average magnitude of predicted correction |
+
+### Feasibility Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `G_learnable` | Gap closable from observations |
+| `G_hidden` | Gap not observable from h_hat, g_hat |
+| `R_tmc` | Ratio of learnable gap closed by TMC |
+| `R_observable` | Fraction of observable gap |
+
+## System Presets
+
+| Preset | n_t | n_ris | s | Spectral Efficiency |
+|--------|-----|-------|---|---------------------|
+| `fig3-2b` | 4 | 64 | 2 | 2 bits/s/Hz |
+| `fig3-3b` | 4 | 64 | 4 | 3 bits/s/Hz |
+| `fig4-4b` | 8 | 64 | 4 | 4 bits/s/Hz |
+| `fig4-5b` | 8 | 64 | 8 | 5 bits/s/Hz |
+
+## Quick Start
+
+### Full Training and Evaluation
 
 ```bash
-python scripts/diagnose_tmc.py \
-    --checkpoint outputs/checkpoints/tmc_best.pt \
-    --num-bits 40000
-
-bash scripts/run_tmc_diagnostics.sh
-```
-
-`diagnose_tmc.py` writes a JSON report plus confusion and vector-alignment figures. The diagnostic bundle compares coordinate-only training, probability-distillation training, and a milder hardware setting; optional hardware-factor ablations can be enabled with `RUN_HARDWARE_ABLATIONS=1`.
-
-## Reproduce the paper-text ML path
-
-```bash
-python scripts/reproduce_paper_text.py \
+# Train
+python scripts/train_tmc.py \
     --paper-preset fig3-3b \
-    --csi-error-var 0.5
+    --csi-error-var 0.5 \
+    --epochs 80
+
+# Evaluate
+python scripts/infer_tmc.py \
+    --checkpoint outputs/checkpoints/tmc_simple_best.pt \
+    --num-bits 50000
 ```
 
-This path is intentionally separate. It keeps the original paper-text assumption: estimated CSI is used for phase design, while receiver-side detection still uses the paper's perfect-CSI ML rule.
-
-## Quick smoke check
+### Smoke Test (CPU, Fast)
 
 ```bash
 python scripts/train_tmc.py \
@@ -120,14 +209,31 @@ python scripts/train_tmc.py \
     --val-batches 1 \
     --batch-size 16 \
     --device cpu \
-    --output-dir outputs/checkpoints-smoke \
-    --report-path outputs/reports/tmc_train_smoke.json
+    --output-dir outputs/checkpoints-smoke
 
 python scripts/infer_tmc.py \
-    --checkpoint outputs/checkpoints-smoke/tmc_best.pt \
+    --checkpoint outputs/checkpoints-smoke/tmc_simple_best.pt \
     --num-bits 96 \
     --batch-size 16 \
-    --device cpu \
-    --report-path outputs/reports/tmc_infer_smoke.json \
-    --figure-path outputs/figures/tmc_smoke.png
+    --device cpu
+```
+
+## Project Structure
+
+```text
+scripts/
+  train_tmc.py      # Maintained training script
+  infer_tmc.py      # Maintained evaluation script
+
+src/resbdnn/
+  modeling/
+    backbones.py    # TMCNet architecture
+  simulation/
+    torch_system.py # System simulation and batch generation
+  config.py         # System configuration
+
+outputs/
+  checkpoints/     # Model checkpoints
+  reports/         # Training/evaluation reports
+  figures/          # Generated plots
 ```

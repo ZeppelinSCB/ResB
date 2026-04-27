@@ -112,8 +112,11 @@ def _loss_and_metrics(model, batch, args, epoch: int | None = None):
     practical_baseline_dist = candidate_distances_from_centers(batch["y"], batch["mu_practical"])
 
     # Core losses: Ranking + Coordinate
+    # Anchor coord loss on mu_shrinkage_posterior (Bayes-posterior, achievable from h_hat,g_hat).
+    # mu_true is information-infeasible from CSI estimates alone; targeting it caps learning.
+    coord_target = batch.get("mu_shrinkage_posterior", batch["mu_true"])
     rank_loss = _ranking_loss(corrected_dist, batch["labels"], args.rank_margin)
-    coord_loss = _complex_mse(outputs["mu_corrected"], batch["mu_true"])
+    coord_loss = _complex_mse(outputs["mu_corrected"], coord_target)
 
     loss = args.rank_weight * rank_loss + args.coord_weight * coord_loss
 
